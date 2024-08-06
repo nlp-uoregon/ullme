@@ -11,7 +11,11 @@ ULLME is a flexible, plug-and-play implementation that enables bidirectional att
 ULLME can be easily installed via one of the following methods:
 
 ### Using pip
-Coming soon!
+```bash
+pip install ullme
+# if you using flash-attention-2 (this is the default for ullme)
+pip install flash-attn --no-build-isolation
+```
 
 ### From source
 ```bash
