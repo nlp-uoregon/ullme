@@ -1,0 +1,2 @@
+{"name": "Hieuman/MSMarco", "path": null, "instruction": "Given a question, retrieve passages that answer the question.", "enable_cross_batch_negative_sampling": true}
+{"name": "Hieuman/imdb", "path": null, "instruction": "Classify the sentiment expressed in the given text as positive or negative.", "enable_cross_batch_negative_sampling": false}

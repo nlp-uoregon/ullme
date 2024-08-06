@@ -1,0 +1,20 @@
+numpy
+brotli
+torch
+cffi
+einops
+faiss-cpu  
+# flash-attn
+gmpy2
+ipykernel
+lightning
+mkl-fft
+mkl-random
+lightning
+mteb
+peft
+pip-chill
+pysocks
+pytorch-metric-learning
+ruamel.yaml
+wandb

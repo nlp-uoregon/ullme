@@ -1,0 +1,53 @@
+# Data args
+training_metadata_path: scripts/configs/training_metadata.jsonl
+max_seq_length: 512
+number_training_samples: 1_000_000
+neg_per_sample: 6
+pos_per_sample: 1
+num_workers: 8
+
+# Model args
+model_name_or_path: 'meta-llama/Meta-Llama-3-8B-Instruct'
+model_backbone_type: 'llama'
+pooling_method: 'mean'
+lora_name: 'embeddings'
+loar_r: 16
+lora_alpha: 32
+dropout: 0.1
+attn_implementation: 'flash_attention_2'
+
+# Training args
+seed: 777
+# Training strategy args
+precision: bf16-mixed
+strategy: fsdp
+sharding_strategy: 'full_shard'
+activation_checkpointing: true
+use_cpu_offload: false
+# Loss args
+con_loss_type: 'NTXentLoss'
+use_miner: true
+is_distance: true
+temperature: 0.05
+gen_loss_type: null
+use_kl_loss: false
+preference_free: false
+label_smoothing: 0.0
+beta: 0.1
+# Optimizer args
+global_batch_size: 64
+eval_batch_size: 32
+max_epochs: 3
+max_steps: 10000
+weight_decay: 0.0
+warmpup_proportion: 0.1
+grad_norm_clip: null # In the case of nan loss, try to use this
+# Checkpoint args
+checkpoint_interval: 500
+log_interval: 1
+logger_type: 'wandb'
+logger_name: 'ullme-llama'
+
+
+
+
