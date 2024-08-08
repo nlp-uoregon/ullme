@@ -141,6 +141,7 @@ class ContrastiveLoss:
             pos_embeds = einops.rearrange(pos_embeds, 'b n d -> (b n) d') # (batch_size * num_pos, embed_dim)
             neg_embeds = einops.rearrange(neg_embeds, 'b n d -> (b n) d') # (batch_size * num_neg, embed_dim)
 
+            world_size = torch.distributed.get_world_size()
             full_q_labels = mismatched_sizes_all_gather(q_labels)
             full_pos_labels = mismatched_sizes_all_gather(pos_labels)
             full_q_embeds = mismatched_sizes_all_gather(q_embeds) 
@@ -163,6 +164,7 @@ class ContrastiveLoss:
                 loss = self.loss_fn(full_embeds, full_labels, hard_pairs)
             else:
                 loss = self.loss_fn(full_embeds, full_labels)
+            loss = loss * world_size # scale the loss to account for global batch size
         else:
             max_idx = torch.max(q_labels)
             neg_labels = torch.arange(neg_embeds.size(0)*neg_embeds.size(1), device=neg_embeds.device) + max_idx + 1 # (num_neg)
