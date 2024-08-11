@@ -177,22 +177,40 @@ class RepLearningCollator:
             pos = example['positive']
             neg = example['negative']
             instruction = example['instruction']
+            
             q = [instruction, q]
+            assert len(q) == 2 and isinstance(q, list), f"Query must be a list of length 2. Got {q}"
+            assert isinstance(q[1], str), f"Query must be a list of length 2. Got {q}"
+            batch_query.append(self.tokenize_example(example=q[1], is_query=True, instruction=q[0]))
+
             if len(pos) > min_pos_per_sample:
                 pos = random.sample(pos, min_pos_per_sample) 
-                pos = [[instruction, p] for p in pos]
+                pos = [(instruction, p) for p in pos]
+            else:
+                pos = [(instruction, p) for p in pos]
+            for p in pos:
+                assert len(p) == 2 and isinstance(p, tuple), f"Positive example must be a tuple of length 2. Got {p}"
+                assert isinstance(p[1], str), f"Positive example must be a tuple of length 2. Got {p}"
+                try:
+                    batch_pos.append(self.tokenize_example(example=p[1], is_query=False, instruction=p[0]))
+                except Exception as e:
+                    print('Error:', e)
+                    print('p:', p)
+
             if len(neg) > min_neg_per_sample:
                 neg = random.sample(neg, min_neg_per_sample)
-                neg = [[instruction, n] for n in neg]
-            batch_query.append(q)
-            batch_pos.extend(pos)
-            batch_neg.extend(neg)
-            batch_choice.extend([self.tokenize_gen_example(query=q[1], instruction=q[0], response=p) for p in pos])
-            batch_reject.extend([self.tokenize_gen_example(query=q[1], instruction=q[0], response=n) for n in neg])
+                neg = [(instruction, n) for n in neg]
+            else:
+                neg = [(instruction, n) for n in neg]
+            for n in neg:
+                assert len(n) == 2 and isinstance(n, tuple), f"Negative example must be a tuple of length 2. Got {n}"
+                assert isinstance(n[1], str), f"Negative example must be a tuple of length 2. Got {n}"
+                try:
+                    batch_neg.append(self.tokenize_example(example=n[1], is_query=False, instruction=n[0]))
+                except Exception as e:
+                    print('Error:', e)
+                    print('n:', n)
         
-        batch_query = [self.tokenize_example(example=x[1], is_query=True, instruction=x[0]) for x in batch_query]
-        batch_pos = [self.tokenize_example(example=x[1], is_query=False, instruction=x[0]) for x in batch_pos]
-        batch_neg = [self.tokenize_example(example=x[1], is_query=False, instruction=x[0]) for x in batch_neg]
         len_q = len(batch_query)
         len_p = len(batch_pos)
         len_n = len(batch_neg)
