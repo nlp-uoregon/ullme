@@ -140,7 +140,7 @@ def main(
         "model": model,
         "optimizer": optimizer,
         "scheduler": scheduler,
-        "iter_num": 0,
+        "current_step": 0,
         "epoch_num": 0,
     }
     if training_args.checkpoint_file is not None:
@@ -197,7 +197,7 @@ def main(
         stage['model'] = model
         fabric.load(checkpoint_path, stage, strict=False)
         model = stage.pop("model")
-        if stage["iter_num"] > lr_max_steps:
+        if stage["current_step"] > lr_max_steps:
             break
     
     fabric.print("Training is finished")

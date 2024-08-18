@@ -43,7 +43,7 @@ requirements_ = requirements(requirements_file)
 
 setup(
     name="ullme",
-    version="0.0.1",
+    version="0.0.4",
     description="ULLME: A Unified Framework for Large Language Model Embeddings with Generation-Augmented Learning",
     long_description=open('README.md').read(),
     long_description_content_type="text/markdown",
