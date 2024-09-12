@@ -1,6 +1,6 @@
 # *ULLME: A Unified Framework for Large Language Model Embeddings with Generation-Augmented Learning*
 
-<!-- [![EMNLP](https://img.shields.io/badge/EMNLP-2024-b31b1b.svg)](https://arxiv.org/) -->
+[![Arxiv](https://img.shields.io/badge/EMNLP-2024-b31b1b.svg)](https://arxiv.org/pdf/2408.03402)
 
 [![License](https://img.shields.io/badge/License-Apache2.0-FFD4E.svg)](https://huggingface.co/Hieuman/GenC-LlaMa)
 [![HF Link](https://img.shields.io/badge/HF%20Models-ULLME-FFD21E.svg)](https://huggingface.co/Hieuman/GenC-LlaMa)
