@@ -1,4 +1,4 @@
-# The following code is modified from transformers.models.gemma.modeling_gemma.py
+# The following code is modified from transformers.models.gemma2.modeling_gemma2.py
 
 from typing import List, Optional, Tuple, Union
 import einops
@@ -6,17 +6,18 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
-from transformers.models.gemma.modeling_gemma import (
-    GemmaConfig,
-    GemmaPreTrainedModel,
-    GemmaDecoderLayer,
-    GemmaRMSNorm,
-    GEMMA_START_DOCSTRING,
-    GEMMA_INPUTS_DOCSTRING
+from transformers.models.gemma2.modeling_gemma2 import (
+    Gemma2Config,
+    Gemma2PreTrainedModel,
+    Gemma2Model,
+    Gemma2DecoderLayer,
+    Gemma2RMSNorm,
+    GEMMA2_START_DOCSTRING,
+    GEMMA2_INPUTS_DOCSTRING
 )
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter, _prepare_4d_attention_mask, _prepare_4d_attention_mask_for_sdpa
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache
+from transformers.cache_utils import Cache, DynamicCache, SlidingWindowCache, StaticCache, HybridCache
 from transformers.utils import (
     logging,
     add_start_docstrings,
@@ -24,46 +25,42 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
+from src.models.bidirectional_modelings.attn_mask_utils import _prepare_4d_causal_attention_mask_with_cache_position
+
 logger = logging.get_logger(__name__)
 
-_CONFIG_FOR_DOC = "GemmaConfig"
+_CONFIG_FOR_DOC = "Gemma2Config"
 
 
-class BidirectionalGemma(nn.Module):
+class BidirectionalGemma2(Gemma2Model):
     """
-    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`GemmaDecoderLayer`]
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`Gemma2DecoderLayer`]
 
     Args:
-        config: GemmaConfig
+        config: Gemma2Config
     """
-    def __init__(self, config: GemmaConfig):
+    def __init__(self, config: Gemma2Config):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList(
-            [GemmaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [Gemma2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = GemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = Gemma2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
         self.post_init()
 
-    def get_input_embeddings(self):
-        return self.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.embed_tokens = value
-
-    @add_start_docstrings_to_model_forward(GEMMA_INPUTS_DOCSTRING)
+    @add_start_docstrings_to_model_forward(GEMMA2_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        past_key_values: Optional[HybridCache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -93,30 +90,39 @@ class BidirectionalGemma(nn.Module):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+        if use_cache and past_key_values is None and not self.training:
+            batch_size, seq_len, _ = inputs_embeds.shape
+            past_key_values = HybridCache(
+                self.config,
+                batch_size=batch_size,
+                max_cache_len=seq_len,
+                device=self.device,
+                dtype=inputs_embeds.dtype,
+            )
+
         if cache_position is None:
-            cache_position = torch.arange(0, inputs_embeds.shape[1], device=inputs_embeds.device)
+            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            cache_position = torch.arange(
+                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+            )
 
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
-        
-        if is_causal:
-            attention_mask = self._update_causal_mask(
-                attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
-            )
-        else:
-            attention_mask = self._update_attn_mask(
-                attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions
-            )
+
+        causal_mask = self._update_causal_mask(
+            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions, is_causal=is_causal
+        )
 
         # embed positions
         hidden_states = inputs_embeds
 
         # normalized
-        # Gemma downcasts the below to float16, causing sqrt(3072)=55.4256 to become 55.5
+        # Gemma2 downcasts the below to float16, causing sqrt(3072)=55.4256 to become 55.5
         # See https://github.com/huggingface/transformers/pull/29402
         normalizer = torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
         hidden_states = hidden_states * normalizer
 
+        # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
@@ -133,7 +139,7 @@ class BidirectionalGemma(nn.Module):
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     hidden_states,
-                    attention_mask,
+                    causal_mask,
                     position_ids,
                     past_key_values,
                     output_attentions,
@@ -143,7 +149,7 @@ class BidirectionalGemma(nn.Module):
             else:
                 layer_outputs = decoder_layer(
                     hidden_states,
-                    attention_mask=attention_mask,
+                    attention_mask=causal_mask,
                     position_ids=position_ids,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
@@ -158,7 +164,6 @@ class BidirectionalGemma(nn.Module):
 
         hidden_states = self.norm(hidden_states)
 
-        # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
 
@@ -178,83 +183,46 @@ class BidirectionalGemma(nn.Module):
         attention_mask: torch.Tensor,
         input_tensor: torch.Tensor,
         cache_position: torch.Tensor,
-        past_key_values: Cache,
+        past_key_values: HybridCache,
         output_attentions: bool,
+        is_causal: bool = False,
     ):
+        # Flash Attention currently doesn't support static cache but Gemma2 work only with static cache.
+        # So we will pass in attention mask as is in any case, not only when ther's padding. Then we'll use its shape
+        # to cut out keys/values trailing 0 used in static cache. This workaround should be compile compatible
+        # as it doesn't cause dynamic control issues.
         if self.config._attn_implementation == "flash_attention_2":
-            if attention_mask is not None and 0.0 in attention_mask:
-                return attention_mask
-            return None
+            return attention_mask
 
         dtype, device = input_tensor.dtype, input_tensor.device
         min_dtype = torch.finfo(dtype).min
         sequence_length = input_tensor.shape[1]
-        if past_key_values is not None:
+        if isinstance(past_key_values, HybridCache):
             target_length = past_key_values.get_max_length()
         else:
             target_length = attention_mask.shape[-1] if attention_mask is not None else input_tensor.shape[1]
 
-        if attention_mask is not None and attention_mask.dim() == 4:
-            # in this case we assume that the mask comes already in inverted form and requires no inversion or slicing
-            if attention_mask.max() != 0:
-                raise ValueError("Custom 4D attention mask should be passed in inverted form with max==0`")
-            causal_mask = attention_mask
-        else:
-            causal_mask = torch.full(
-                (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device
-            )
-            if sequence_length != 1:
-                causal_mask = torch.triu(causal_mask, diagonal=1)
-            causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-            causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
-            if attention_mask is not None:
-                causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-                mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
-                padding_mask = padding_mask == 0
-                causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                    padding_mask, min_dtype
-                )
+        # In case the provided `attention` mask is 2D, we generate a causal mask here (4D).
+        causal_mask = _prepare_4d_causal_attention_mask_with_cache_position(
+            attention_mask,
+            sequence_length=sequence_length,
+            target_length=target_length,
+            dtype=dtype,
+            device=device,
+            min_dtype=min_dtype,
+            cache_position=cache_position,
+            batch_size=input_tensor.shape[0],
+            is_causal=is_causal,
+        )
         return causal_mask
 
-    def _update_attn_mask(
-        self,
-        attention_mask: torch.Tensor,
-        input_tensor: torch.Tensor,
-        cache_position: torch.Tensor,
-        past_key_values: Cache,
-        output_attentions: bool,
-    ):
-        # TODO: As of torch==2.2.0, the `attention_mask` passed to the model in `generate` is 2D and of dynamic length even when the static
-        # KV cache is used. This is an issue for torch.compile which then recaptures cudagraphs at each decode steps due to the dynamic shapes.
-        # (`recording cudagraph tree for symint key 13`, etc.), which is VERY slow. A workaround is `@torch.compiler.disable`, but this prevents using
-        # `fullgraph=True`. See more context in https://github.com/huggingface/transformers/pull/29114
 
-        if self.config._attn_implementation == "flash_attention_2":
-            if attention_mask is not None and 0.0 in attention_mask:
-                return attention_mask
-            return None
-        
-        if self.config._attn_implementation == "sdpa" and not output_attentions:
-            # output_attentions=True can not be supported when using SDPA, and we fall back on
-            # the manual implementation that requires a 4D causal mask in all cases.
-            attention_mask = _prepare_4d_attention_mask_for_sdpa(
-                attention_mask, input_tensor.dtype, 
-            )
-        else:
-            # 4d mask is passed through the layers
-            attention_mask = _prepare_4d_attention_mask(
-                attention_mask, input_tensor.dtype,
-            )
-        return attention_mask
-
-
-class BidirectionalGemmaForCausalLM(GemmaPreTrainedModel):
+class BidirectionalGemma2ForCausalLM(Gemma2PreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
         super().__init__(config)
-        self.model = BidirectionalGemma(config)
+        self.model = BidirectionalGemma2(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
@@ -279,7 +247,7 @@ class BidirectionalGemmaForCausalLM(GemmaPreTrainedModel):
     def get_decoder(self):
         return self.model
 
-    @add_start_docstrings_to_model_forward(GEMMA_INPUTS_DOCSTRING)
+    @add_start_docstrings_to_model_forward(GEMMA2_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
@@ -323,7 +291,7 @@ class BidirectionalGemmaForCausalLM(GemmaPreTrainedModel):
         ```"""
         if self.training and self.config._attn_implementation != "eager":
             logger.warning_once(
-                "It is strongly recommended to train Gemma models with the `eager` attention implementation "
+                "It is strongly recommended to train Gemma2 models with the `eager` attention implementation "
                 f"instead of `{self.config._attn_implementation}`. Use `eager` with `AutoModelForCausalLM.from_pretrained('<path-to-checkpoint>', attn_implementation='eager')`."
             )
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions

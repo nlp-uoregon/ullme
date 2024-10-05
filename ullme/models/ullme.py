@@ -19,14 +19,12 @@ from transformers.models.t5.modeling_t5 import T5EncoderModel
 from peft import PeftModel, LoraConfig, TaskType, get_peft_model
 import mteb
 
-from ullme.models.modeling_bidirectional_mistral import BidirectionalMistralForCausalLM
-from ullme.models.modeling_bidirectional_llama import BidirectionalLlamaForCausalLM
-from ullme.models.modeling_bidirectional_phi3 import BidirectionalPhi3ForCausalLM
-from ullme.models.modeling_bidirectional_phi import BidirectionalPhiForCausalLM
-from ullme.models.modeling_bidirectional_qwen2 import BidirectionalQwen2ForCausalLM
-from ullme.models.modeling_bidirectional_cohere import BidirectionalCohereForCausalLM
-from ullme.models.modeling_bidirectional_gemma import BidirectionalGemmaForCausalLM
-from ullme.models.modeling_bidirectional_gemma2 import BidirectionalGemma2ForCausalLM
+from ullme.models.bidirectional_modelings.modeling_bidirectional_mistral import BidirectionalMistralForCausalLM
+from ullme.models.bidirectional_modelings.modeling_bidirectional_llama import BidirectionalLlamaForCausalLM
+from ullme.models.bidirectional_modelings.modeling_bidirectional_phi3 import BidirectionalPhi3ForCausalLM
+from ullme.models.bidirectional_modelings.modeling_bidirectional_phi import BidirectionalPhiForCausalLM
+from ullme.models.bidirectional_modelings.modeling_bidirectional_qwen2 import BidirectionalQwen2ForCausalLM
+from ullme.models.bidirectional_modelings.modeling_bidirectional_gemma2 import BidirectionalGemma2ForCausalLM
 from ullme.special_tokens import SPECIAL_TOKENS
 from ullme.models.utils import find_all_linear_names
 
@@ -175,10 +173,6 @@ class ULLME(nn.Module):
                 model_class = BidirectionalPhiForCausalLM
             elif backbone_type == "qwen2":
                 model_class = BidirectionalQwen2ForCausalLM
-            elif backbone_type == "cohere":
-                model_class = BidirectionalCohereForCausalLM
-            elif backbone_type == "gemma":
-                model_class = BidirectionalGemmaForCausalLM
             elif backbone_type == 'gemma2':
                 model_class = BidirectionalGemma2ForCausalLM
             else:
@@ -294,6 +288,7 @@ class ULLME(nn.Module):
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     output_hidden_states=True,
+                    is_caual=False,
                     return_dict=True
                 ).hidden_states[-1] # (batch_size, seq_len, hidden_size)
             else:
