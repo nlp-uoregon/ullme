@@ -127,6 +127,9 @@ python -m eval.eval_mteb \
     --output_dir output/ullme-grl-llam3/checkpoint.ckpt
 ```
 
+## Acknowledgements
+This project has been supported by the Office of the Director of National Intelligence (ODNI), Intelligence Advanced Research Projects Activity (IARPA), via IARPA Contract No. 2022-22072200003 under [the  Human Interpretable Attribution of Text using Underlying Structure (HIATUS) Program](https://www.iarpa.gov/research-programs/hiatus).
+
 ## Bugs or questions?
 If you have any questions about the code, feel free to open an issue on the GitHub repository.
 
