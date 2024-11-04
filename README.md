@@ -110,7 +110,7 @@ We publish three fine-tuned model using GRL on three popular LLMs: [Meta-Llama-3
 To finetune the Meta-Llama-3-8B model, run the following command:
 
 ```bash
-python -m genc.main \
+python -m ullme.main \
     --config_file scripts/configs/llama.yaml \
     --nodes 4 \
     --devices 1 \
