@@ -1,9 +1,11 @@
+from typing import Optional
 import einops
 import torch
 import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as F 
 from pytorch_metric_learning import losses, miners, distances
+from pytorch_metric_learning.utils.loss_and_miner_utils import get_matches_and_diffs
 
 
 class AllGather(torch.autograd.Function):
@@ -106,79 +108,48 @@ class ContrastiveLoss:
             raise ValueError(f"Unsupported loss type: {loss_type}")
 
         if use_miner:
-            self.miner = miners.PairMarginMiner(
-                pos_margin = 0.0 if is_distance else 1.0, # under 1.0 for cosine similarity or over 0.0 for LpDistance will be considered as hard positive 
-                neg_margin = 0.5, # over 0.5 for cosine similarity or under 0.5 for LpDistance will be considered as hard negative.
-                distance=distance
-                )
+            self.miner = miners.MultiSimilarityMiner(epsilon=0.25)
         else:
             self.miner = None
-
-        self.cross_entropy_loss = nn.CrossEntropyLoss()
 
     def __call__(
             self, 
             q_embeds: torch.Tensor, # (batch_size, embed_dim) 
-            q_labels: torch.Tensor, # (batch_size,)
             pos_embeds: torch.Tensor, # (batch_size, num_pos, embed_dim)
             neg_embeds: torch.Tensor, # (batch_size, num_neg, embed_dim)
+            q_labels: Optional[torch.Tensor]=None, # (batch_size,)
             cross_batch_loss: bool = True,
             ):
         
-        cross_batch_loss =  cross_batch_loss and torch.distributed.is_initialized()
-        cross_batch_loss = torch.tensor(cross_batch_loss, device=q_embeds.device)
-        if cross_batch_loss:
-            # gather all cross_batch_loss flags from all processes
-            all_cross_batch_loss = [torch.zeros_like(cross_batch_loss) for _ in range(torch.distributed.get_world_size())]
-            torch.distributed.all_gather(all_cross_batch_loss, cross_batch_loss)
-            # if all the processes have cross_batch_loss=True, then the cross_batch_loss=True
-            cross_batch_loss = all([x.item() for x in all_cross_batch_loss])
-
         pos_labels = einops.repeat(q_labels, 'b -> b n', n=pos_embeds.size(1)) # (batch_size, num_pos)
+        pos_labels = einops.rearrange(pos_labels, 'b n -> (b n)')
+        pos_embeds = einops.rearrange(pos_embeds, 'b n d -> (b n) d') # (batch_size * num_pos, embed_dim)
+        neg_embeds = einops.rearrange(neg_embeds, 'b n d -> (b n) d') # (batch_size * num_neg, embed_dim)
+
+        world_size = torch.distributed.get_world_size()
+        full_q_labels = mismatched_sizes_all_gather(q_labels)
+        full_pos_labels = mismatched_sizes_all_gather(pos_labels)
+        full_q_embeds = mismatched_sizes_all_gather(q_embeds) 
+        full_pos_embeds = mismatched_sizes_all_gather(pos_embeds)
+        full_neg_embeds = mismatched_sizes_all_gather(neg_embeds)
+
+        full_q_labels = torch.cat(full_q_labels, dim=0) # (world_size * batch_size,)
+        full_pos_labels = torch.cat(full_pos_labels, dim=0) # (num_all_pos,)
+        full_q_embeds = torch.cat(full_q_embeds, dim=0) # (world_size * batch_size, embed_dim)
+        full_pos_embeds = torch.cat(full_pos_embeds, dim=0) # (num_all_pos, embed_dim)
+        full_neg_embeds = torch.cat(full_neg_embeds, dim=0) # (num_all_neg, embed_dim)
+        max_idx = torch.max(full_q_labels)
+        full_neg_labels = torch.arange(full_neg_embeds.size(0), device=full_neg_embeds.device) + max_idx + 1 # (num_all_neg,)
         
-        if cross_batch_loss:
-            pos_labels = einops.rearrange(pos_labels, 'b n -> (b n)')
-            pos_embeds = einops.rearrange(pos_embeds, 'b n d -> (b n) d') # (batch_size * num_pos, embed_dim)
-            neg_embeds = einops.rearrange(neg_embeds, 'b n d -> (b n) d') # (batch_size * num_neg, embed_dim)
+        full_labels = torch.cat([full_q_labels, full_pos_labels, full_neg_labels], dim=0)
+        full_embeds = torch.cat([full_q_embeds, full_pos_embeds, full_neg_embeds], dim=0)
 
-            world_size = torch.distributed.get_world_size()
-            full_q_labels = mismatched_sizes_all_gather(q_labels)
-            full_pos_labels = mismatched_sizes_all_gather(pos_labels)
-            full_q_embeds = mismatched_sizes_all_gather(q_embeds) 
-            full_pos_embeds = mismatched_sizes_all_gather(pos_embeds)
-            full_neg_embeds = mismatched_sizes_all_gather(neg_embeds)
-
-            full_q_labels = torch.cat(full_q_labels, dim=0) # (world_size * batch_size,)
-            full_pos_labels = torch.cat(full_pos_labels, dim=0) # (num_all_pos,)
-            full_q_embeds = torch.cat(full_q_embeds, dim=0) # (world_size * batch_size, embed_dim)
-            full_pos_embeds = torch.cat(full_pos_embeds, dim=0) # (num_all_pos, embed_dim)
-            full_neg_embeds = torch.cat(full_neg_embeds, dim=0) # (num_all_neg, embed_dim)
-            max_idx = torch.max(full_q_labels)
-            full_neg_labels = torch.arange(full_neg_embeds.size(0), device=full_neg_embeds.device) + max_idx + 1 # (num_all_neg,)
-            
-            full_labels = torch.cat([full_q_labels, full_pos_labels, full_neg_labels], dim=0)
-            full_embeds = torch.cat([full_q_embeds, full_pos_embeds, full_neg_embeds], dim=0)
-
-            if self.miner is not None:
-                hard_pairs = self.miner(full_embeds, full_labels)
-                loss = self.loss_fn(full_embeds, full_labels, hard_pairs)
-            else:
-                loss = self.loss_fn(full_embeds, full_labels)
-            loss = loss * world_size # scale the loss to account for global batch size
+        if self.miner is not None:
+            hard_pairs = self.miner(full_embeds, full_labels)
+            loss = self.loss_fn(full_embeds, full_labels, hard_pairs)
         else:
-            max_idx = torch.max(q_labels)
-            neg_labels = torch.arange(neg_embeds.size(0)*neg_embeds.size(1), device=neg_embeds.device) + max_idx + 1 # (num_neg)
-            neg_labels = einops.rearrange(neg_labels, '(b n) -> b n', b=neg_embeds.size(0), n=neg_embeds.size(1)) # (batch_size, num_neg)
-            
-            candidate_labels = torch.cat([pos_labels, neg_labels], dim=1) # (batch_size, num_pos + num_neg)
-            candidate_embeds = torch.cat([pos_embeds, neg_embeds], dim=1) # (batch_size, num_pos + num_neg, embed_dim)
-            
-            # labels[i][j] = 1  if candidate_labels[i][j] == q_labels[i] else 0
-            labels = torch.eq(candidate_labels, einops.repeat(q_labels, 'b -> b n', n=candidate_labels.size(1))) # (batch_size, num_pos + num_neg)
-            labels = torch.softmax(labels.float(), dim=-1) # (batch_size, num_pos + num_neg)
-            # get scores where scores[i][j] = cosine_similarity(q_embeds[i], candidate_embs[i][j])
-            scores = F.cosine_similarity(q_embeds.unsqueeze(1), candidate_embeds, dim=-1) / self.temperature # (batch_size, num_pos + num_neg)
-            loss = self.cross_entropy_loss(scores, labels)
+            loss = self.loss_fn(full_embeds, full_labels)
+        loss = loss * world_size # scale the loss to account for the same global batch size
 
         return loss
 

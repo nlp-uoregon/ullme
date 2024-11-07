@@ -284,7 +284,6 @@ MULTILINGUAL_DS_TO_PROMPT = {
         "MassiveIntentClassification": "Given a user utterance as query, find the user intents.",
         "MassiveScenarioClassification": "Given a user utterance as query, find the user scenarios.",
         "KLUE-TC": "Identify the category of the following passages.",
-        "KorFin": "Classify the sentiment expressed in the given text as positive, negative or neutral.",
         "KorSarcasmClassification": "Classify the given text into one of the following categories: sarcasm or not sarcasm.",
         "SIB200Classification": "Identify the category of the following passages.",
         "SIB200ClusteringS2S": "Identify the category of the following passages.",
@@ -405,7 +404,6 @@ MULTILINGUAL_DS_TO_PROMPT = {
         "CLSClusteringS2S": "Identify the category of the following passages.",
         "ThuNewsClusteringP2P": "Identify the category of the following passages.",
         "ThuNewsClusteringS2S": "Identify the category of the following passages.",
-        "Cmnli": 'Given a premise, retrieve a hypothesis that is entailed by the premise.',
         "Ocnli": 'Given a premise, retrieve a hypothesis that is entailed by the premise.',
         "PawsXPairClassification": "Retrieve semantically similar text.",
         "MMarcoReranking": "Given a question, retrieve passages that answer the question.",
@@ -424,56 +422,52 @@ MULTILINGUAL_DS_TO_PROMPT = {
         "BQ": "Retrieve semantically similar text.",
         "LCQMC": "Retrieve semantically similar text.",
         "PAWSX": "Retrieve semantically similar text.",
-        "QBQTC": "Retrieve semantically similar text.",
         "STSB": "Retrieve semantically similar text.",
         'STS22': "Retrieve semantically similar text.",
     },
 }
 
 LANG_TO_CODES = {
-    'ar': ['ara'],
-    'bn': ['ben'],
-    'de': ['deu'],
-    'es': ['spa'],
-    'en': ['eng'],
-    'fa': ['fas'],
-    'fi': ['fin'],
-    'fr': ['fra'],
-    'hi': ['hin'],
-    'id': ['ind'],
-    'ja': ['jpn'],
-    'ko': ['kor'],
-    'ru': ['rus'],
-    'sw': ['swa'],
-    'te': ['tel'],
-    'th': ['tha'],
-    'vi': ['vie'],
-    'yo': ['yor'],
-    'zh': ['cmn', 'cmo', 'zho'],
+    'ar': ['ara'], # Medium-resource language
+    'bn': ['ben'], # Low-resource language
+    'de': ['deu'], # High-resource language
+    'es': ['spa'], # High-resource language
+    'en': ['eng'], # High-resource language
+    'fa': ['fas'], # Medium-resource language
+    'fi': ['fin'], # Medium-resource language
+    'fr': ['fra'], # High-resource language
+    'hi': ['hin'], # Medium-resource language
+    'id': ['ind'], # Medium-resource language
+    'ja': ['jpn'], # High-resource language
+    'ko': ['kor'], # Medium-resource language
+    'ru': ['rus'], # High-resource language
+    'sw': ['swa'], # Extremely low-resource language
+    'te': ['tel'], # Low-resource language
+    'vi': ['vie'], # High-resource language
+    'yo': ['yor'], # Extremely low-resource language
+    'zh': ['cmn', 'cmo', 'zho'], # High-resource language
 }
 
 QUICK_EVAL = [
     # Classification
-    # "Banking77Classification",
-    "EmotionClassification",
+    'AmazonReviewsClassification',
+    'RuReviewsClassification',
+    'MultilingualSentimentClassification',
+    'SIB200Classification',
+    'BengaliDocumentClassification',
     # Clustering
-    "MedrxivClusteringS2S",
-    "TERRa",
-    # PairClassification
-    "TwitterSemEval2015",
+    'MedrxivClusteringS2S',
+    'TERRa',
+    'SIB200ClusteringS2S',
     # Reranking
-    "AskUbuntuDupQuestions",
+    'AskUbuntuDupQuestions',
+    'WikipediaRerankingMultilingual',
     # Retrieval
     "ArguAna",
-    # "NFCorpus",
-    "SciFact",
-    'MintakaRetrieval',
-    'BelebeleRetrieval',
+    "VieQuADRetrieval",
+    "WikipediaRetrievalMultilingual"
     # STS
-    # "BIOSSES",
-    # "STSBenchmark",
     "STS22",
-    # Summarization
-    "SummEval",
+    'IndicCrosslingualSTS',
 ]
 

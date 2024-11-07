@@ -1,53 +1,60 @@
-# Data args
-training_metadata_path: scripts/configs/training_metadata.jsonl
+data_names:
+- Hieuman/Arguana
+- Hieuman/SciFact
 max_seq_length: 512
-number_training_samples: 1_000_000
-neg_per_sample: 6
-pos_per_sample: 1
+neg_per_sample: 1
 num_workers: 8
-
-# Model args
-model_name_or_path: 'microsoft/phi-1_5'
-model_backbone_type: 'phi'
-pooling_method: 'mean'
-lora_name: 'embeddings'
+number_training_samples: 200
+pos_per_sample: 1
+attn_implementation: sdpa
+dropout: 0.1
+encoder_backbone_type: phi
+encoder_lora_name: encoder_lora
+encoder_lora_target_modules:
+- q_proj
+- k_proj
+- v_proj
+- gate_proj
+- down_proj
+- up_proj
+- o_proj
+encoder_name_or_path: 'microsoft/phi-1_5'
 loar_r: 16
 lora_alpha: 32
-dropout: 0.1
-attn_implementation: 'flash_attention_2'
-
-# Training args
-seed: 777
-# Training strategy args
-precision: bf16-mixed
-strategy: fsdp
-sharding_strategy: 'full_shard'
 activation_checkpointing: true
-use_cpu_offload: false
-# Loss args
-con_loss_type: 'NTXentLoss'
-use_miner: true
-is_distance: true
-temperature: 0.05
-gen_loss_type: null
-use_kl_loss: false
-preference_free: false
-label_smoothing: 0.0
 beta: 0.1
-# Optimizer args
-global_batch_size: 64
-eval_batch_size: 32
-max_epochs: 3
-max_steps: 10000
-weight_decay: 0.0
-warmpup_proportion: 0.1
-grad_norm_clip: null # In the case of nan loss, try to use this
-# Checkpoint args
+checkpoint_dir: output/test1
+checkpoint_file: null
 checkpoint_interval: 500
+devices: 4
+eval_batch_size: 128
+gc_chunk_size: 1
+gen_loss_type: sft
+global_batch_size: 16
+grad_norm_clip: 1.0
+is_cosine_annealing: true
+is_distance: true
+label_smoothing: 0.0
+learning_rate: 0.0001
 log_interval: 1
-logger_type: 'wandb'
-logger_name: 'ullme-phi'
-
-
-
-
+logger_name: ullme_llama
+logger_type: wandb
+loss_type: NTXentLoss
+max_epochs: 3
+max_steps: 50000
+min_learning_rate: 1.0e-07
+model_revision: ullme_llama
+nodes: 1
+only_load_model: false
+precision: bf16-mixed
+quantization: false
+seed: 999
+sharding_strategy: shard_grad_op
+strategy: fsdp
+temperature: 0.05
+use_cpu_offload: false
+use_gen: true
+use_kl: false
+use_miner: true
+warmpup_proportion: 0.05
+weight_decay: 0.0

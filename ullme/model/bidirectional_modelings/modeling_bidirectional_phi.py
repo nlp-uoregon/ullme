@@ -1,19 +1,18 @@
-# The following code is modified from transformers.models.mistral.modeling_mistral.py
+# The following code is modified from transformers.models.phi.modeling_phi.py
 
 from typing import List, Optional, Tuple, Union
 import einops
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
-from transformers.models.mistral.modeling_mistral import (
-    MistralConfig,
-    MistralPreTrainedModel,
-    MistralModel,
-    MistralDecoderLayer,
-    MistralRMSNorm,
-    MISTRAL_START_DOCSTRING,
-    MISTRAL_INPUTS_DOCSTRING
+from transformers.models.phi.modeling_phi import (
+    PhiConfig,
+    PhiPreTrainedModel,
+    PhiRotaryEmbedding,
+    PhiModel,
+    PhiDecoderLayer,
+    PHI_START_DOCSTRING,
+    PHI_INPUTS_DOCSTRING
 )
 from transformers.modeling_attn_mask_utils import AttentionMaskConverter, _prepare_4d_attention_mask, _prepare_4d_attention_mask_for_sdpa
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
@@ -25,43 +24,50 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 
-from src.models.bidirectional_modelings.attn_mask_utils import _prepare_4d_causal_attention_mask_with_cache_position
+from ullme.model.bidirectional_modelings.attn_mask_utils import _prepare_4d_causal_attention_mask_with_cache_position
 
-_CONFIG_FOR_DOC = "MistralConfig"
+_CONFIG_FOR_DOC = "PhiConfig"
 
 logger = logging.get_logger(__name__)
 
 
-class BidirectionalMistral(MistralModel):
+@add_start_docstrings(
+    "The bare Phi-3 model outputting raw hidden-states without any specific head on top.",
+    PHI_START_DOCSTRING,
+)
+class BidirectionalPhi(PhiModel):
     """
-    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`MistralDecoderLayer`]
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`Phi3DecoderLayer`]
 
     Args:
-        config: MistralConfig
+        config: Phi3Config
     """
-    def __init__(self, config: MistralConfig):
+    def __init__(self, config: PhiConfig):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        self.embed_dropout = nn.Dropout(config.embd_pdrop)
         self.layers = nn.ModuleList(
-            [MistralDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [PhiDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self._attn_implementation = config._attn_implementation
-        self.norm = MistralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.final_layernorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+
+        self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
+        self._use_sdpa = config._attn_implementation == "sdpa"
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
         self.post_init()
 
-    @add_start_docstrings_to_model_forward(MISTRAL_INPUTS_DOCSTRING)
+    @add_start_docstrings_to_model_forward(PHI_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
@@ -78,20 +84,17 @@ class BidirectionalMistral(MistralModel):
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        # retrieve input_ids and inputs_embeds
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError(
                 "You cannot specify both input_ids and inputs_embeds at the same time, and must specify either one"
             )
 
-        if self.gradient_checkpointing and self.training and use_cache:
-            logger.warning_once(
-                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-            )
-            use_cache = False
-
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_tokens(input_ids)
+        if self.gradient_checkpointing and self.training:
+            if use_cache:
+                logger.warning_once(
+                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                )
+                use_cache = False
 
         # kept for BC (non `Cache` `past_key_values` inputs)
         return_legacy_cache = False
@@ -107,19 +110,22 @@ class BidirectionalMistral(MistralModel):
                     "(https://huggingface.co/docs/transformers/kv_cache#legacy-cache-format)"
                 )
 
+        if inputs_embeds is None:
+            inputs_embeds = self.embed_tokens(input_ids)
+
         if cache_position is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
-
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
         causal_mask = self._update_causal_mask(
-            attention_mask, inputs_embeds, cache_position, past_key_values, use_cache, output_attentions, is_causal=is_causal
+            attention_mask, inputs_embeds, cache_position, past_key_values, output_attentions, is_causal=is_causal
         )
 
+        inputs_embeds = self.embed_dropout(inputs_embeds)
         hidden_states = inputs_embeds
 
         # decoder layers
@@ -142,9 +148,9 @@ class BidirectionalMistral(MistralModel):
                     hidden_states,
                     causal_mask,
                     position_ids,
-                    past_key_values,
                     output_attentions,
                     use_cache,
+                    past_key_values,
                     cache_position,
                 )
             else:
@@ -166,7 +172,7 @@ class BidirectionalMistral(MistralModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
-        hidden_states = self.norm(hidden_states)
+        hidden_states = self.final_layernorm(hidden_states)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -185,25 +191,17 @@ class BidirectionalMistral(MistralModel):
             attentions=all_self_attns,
         )
 
+    # Copied from transformers.models.llama.modeling_llama.LlamaModel._update_causal_mask
     def _update_causal_mask(
         self,
         attention_mask: torch.Tensor,
         input_tensor: torch.Tensor,
         cache_position: torch.Tensor,
         past_key_values: Cache,
-        use_cache: bool,
         output_attentions: bool,
-        is_causal: bool = False,
+        is_causal: bool=False,
     ):
-        if self._attn_implementation == "flash_attention_2":
-            if attention_mask is not None and use_cache:
-                is_padding_right = attention_mask[:, -1].sum().item() != input_tensor.size()[0]
-                if is_padding_right:
-                    raise ValueError(
-                        "You are attempting to perform batched generation with padding_side='right'"
-                        " this may lead to unexpected behaviour for Flash Attention version of Mistral. Make sure to "
-                        " call `tokenizer.padding_side  = 'left'` before tokenizing the input. "
-                    )
+        if self.config._attn_implementation == "flash_attention_2":
             if attention_mask is not None and 0.0 in attention_mask:
                 return attention_mask
             return None
@@ -211,22 +209,15 @@ class BidirectionalMistral(MistralModel):
         # For SDPA, when possible, we will rely on its `is_causal` argument instead of its `attn_mask` argument, in
         # order to dispatch on Flash Attention 2. This feature is not compatible with static cache, as SDPA will fail
         # to infer the attention mask.
-
-        # cache_position must be valid here no matter which cache we use
         past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
         using_static_cache = isinstance(past_key_values, StaticCache)
-        using_sliding_window_cache = isinstance(past_key_values, SlidingWindowCache)
 
-        # if (
-        #     self.config._attn_implementation == "sdpa"
-        #     and not (using_static_cache or using_sliding_window_cache)
-        #     and not output_attentions
-        # ):
+        # # When output attentions is True, sdpa implementation's forward method calls the eager implementation's forward
+        # if self.config._attn_implementation == "sdpa" and not using_static_cache and not output_attentions:
         #     if AttentionMaskConverter._ignore_causal_mask_sdpa(
         #         attention_mask,
         #         inputs_embeds=input_tensor,
         #         past_key_values_length=past_seen_tokens,
-        #         sliding_window=self.config.sliding_window,
         #         is_training=self.training,
         #     ):
         #         return None
@@ -234,59 +225,27 @@ class BidirectionalMistral(MistralModel):
         dtype, device = input_tensor.dtype, input_tensor.device
         min_dtype = torch.finfo(dtype).min
         sequence_length = input_tensor.shape[1]
-        # SlidingWindowCache
-        if using_sliding_window_cache:
-            target_length = max(sequence_length, self.config.sliding_window)
-        # StaticCache
-        elif using_static_cache:
+        if using_static_cache:
             target_length = past_key_values.get_max_length()
-        # DynamicCache or no cache
         else:
             target_length = (
                 attention_mask.shape[-1]
                 if isinstance(attention_mask, torch.Tensor)
                 else past_seen_tokens + sequence_length + 1
             )
-        if is_causal:
-            if attention_mask is not None and attention_mask.dim() == 4:
-                causal_mask = attention_mask
-            else:
-                causal_mask = torch.full(
-                    (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device
-                )
-                exclude_mask = torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-                if self.config.sliding_window is not None:
-                    if not using_sliding_window_cache or sequence_length > self.config.sliding_window:
-                        exclude_mask.bitwise_or_(
-                            torch.arange(target_length, device=device)
-                            <= (cache_position.reshape(-1, 1) - self.config.sliding_window)
-                        )
-                causal_mask *= exclude_mask
-                causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
-                if attention_mask is not None:
-                    causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
-                    if attention_mask.dim() == 2:
-                        mask_length = attention_mask.shape[-1]
-                        padding_mask = causal_mask[:, :, :, :mask_length] + attention_mask[:, None, None, :]
-                        padding_mask = padding_mask == 0
-                        causal_mask[:, :, :, :mask_length] = causal_mask[:, :, :, :mask_length].masked_fill(
-                            padding_mask, min_dtype
-                        )
-        else:
-            if using_sliding_window_cache:
-                raise ValueError("SlidingWindow hasn't been implemented for non-causal masking when using sdpa or eager attention implementation for bidirectional modeling.\n \
-                                 Please swich to flash_attention_2!")
-            causal_mask = _prepare_4d_causal_attention_mask_with_cache_position(
-                attention_mask,
-                sequence_length=sequence_length,
-                target_length=target_length,
-                dtype=dtype,
-                device=device,
-                min_dtype=min_dtype,
-                cache_position=cache_position,
-                batch_size=input_tensor.shape[0],
-                is_causal=is_causal,
-            )
+
+        # In case the provided `attention` mask is 2D, we generate a causal mask here (4D).
+        causal_mask = _prepare_4d_causal_attention_mask_with_cache_position(
+            attention_mask,
+            sequence_length=sequence_length,
+            target_length=target_length,
+            dtype=dtype,
+            device=device,
+            min_dtype=min_dtype,
+            cache_position=cache_position,
+            batch_size=input_tensor.shape[0],
+            is_causal=is_causal,
+        )
 
         if (
             self.config._attn_implementation == "sdpa"
@@ -301,45 +260,53 @@ class BidirectionalMistral(MistralModel):
 
         return causal_mask
 
-        
-class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
+
+class BidirectionalPhiForCausalLM(PhiPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
+    # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.__init__ with Llama->Phi3
     def __init__(self, config):
         super().__init__(config)
-        self.model = BidirectionalMistral(config)
+        self.model = BidirectionalPhi(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize weights and apply final processing
         self.post_init()
 
+    # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.get_input_embeddings
     def get_input_embeddings(self):
         return self.model.embed_tokens
 
+    # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.set_input_embeddings
     def set_input_embeddings(self, value):
         self.model.embed_tokens = value
 
+    # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.get_output_embeddings
     def get_output_embeddings(self):
         return self.lm_head
 
+    # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.set_output_embeddings
     def set_output_embeddings(self, new_embeddings):
         self.lm_head = new_embeddings
 
+    # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.set_decoder
     def set_decoder(self, decoder):
         self.model = decoder
 
+    # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.get_decoder
     def get_decoder(self):
         return self.model
 
-    @add_start_docstrings_to_model_forward(MISTRAL_INPUTS_DOCSTRING)
+    # Ignore copy
+    @add_start_docstrings_to_model_forward(PHI_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
@@ -347,7 +314,7 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        is_causal: Optional[bool] = False,
+        is_causal: Optional[bool] = True,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -361,18 +328,18 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
         Example:
 
         ```python
-        >>> from transformers import AutoTokenizer, MistralForCausalLM
+        >>> from transformers import AutoTokenizer, Phi3ForCausalLM
 
-        >>> model = MistralForCausalLM.from_pretrained("mistralai/Mistral-7B-v0.1")
-        >>> tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-v0.1")
+        >>> model = Phi3ForCausalLM.from_pretrained("microsoft/phi-3-mini-4k-instruct")
+        >>> tokenizer = AutoTokenizer.from_pretrained("microsoft/phi-3-mini-4k-instruct")
 
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> prompt = "This is an example script ."
         >>> inputs = tokenizer(prompt, return_tensors="pt")
 
         >>> # Generate
         >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        'This is an example script .\n Certainly! Below is a sample script that demonstrates a simple task, such as calculating the sum'
         ```"""
 
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -392,7 +359,6 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
-            cache_position=cache_position,
             is_causal=is_causal,
         )
 
@@ -406,11 +372,11 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
+            loss_fct = CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
-            # Ensure tensors are on the same device
+            # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
-            loss_fct = CrossEntropyLoss()
             loss = loss_fct(shift_logits, shift_labels)
 
         if not return_dict:
@@ -425,6 +391,7 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
             attentions=outputs.attentions,
         )
 
+    # Copied from transformers.models.persimmon.modeling_persimmon.PersimmonForCausalLM.prepare_inputs_for_generation
     def prepare_inputs_for_generation(
         self,
         input_ids,
@@ -436,7 +403,6 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
         **kwargs,
     ):
         past_length = 0
-        # Omit tokens covered by past_key_values
         if past_key_values is not None:
             # Past key values are always initialized with a `Cache` object -> no need for if-else anymore
             past_length = cache_position[0] if cache_position is not None else past_key_values.get_seq_length()
@@ -475,20 +441,11 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
             if past_key_values:
                 position_ids = position_ids[:, -input_ids.shape[1] :]
 
-        # crop the attention_mask to sliding window size during decode phase if using SlidingWindowCache
-        if (
-            past_length > 0
-            and attention_mask is not None
-            and isinstance(past_key_values, SlidingWindowCache)
-            and attention_mask.shape[1] > past_key_values.max_cache_len
-        ):
-            attention_mask = attention_mask[:, -past_key_values.max_cache_len :]
-
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_length == 0:
             model_inputs = {"inputs_embeds": inputs_embeds}
         else:
-            model_inputs = {"input_ids": input_ids.contiguous()}
+            model_inputs = {"input_ids": input_ids}
 
         input_length = position_ids.shape[-1] if position_ids is not None else input_ids.shape[-1]
         if cache_position is None:
@@ -499,15 +456,16 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
         model_inputs.update(
             {
                 "position_ids": position_ids,
-                "cache_position": cache_position,
                 "past_key_values": past_key_values,
                 "use_cache": use_cache,
                 "attention_mask": attention_mask,
+                "cache_position": cache_position,
             }
         )
         return model_inputs
 
     @staticmethod
+    # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM._reorder_cache
     def _reorder_cache(past_key_values, beam_idx):
         reordered_past = ()
         for layer_past in past_key_values:
@@ -515,6 +473,5 @@ class BidirectionalMistralForCausalLM(MistralPreTrainedModel):
                 tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
             )
         return reordered_past
-
 
 

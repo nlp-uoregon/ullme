@@ -1,47 +1,30 @@
 SPECIAL_TOKENS = {
-    't5': {
+    'xlm-r': {
+        'bos': '<s>',
         'eos': '</s>',
+    },
+    'mistral': {
+        'bos': '<s>',
+        'eos': '</s>',
+        'pad': '</s>',
+        'mask': '<unk>',
     },
     'llama': {
         'bos': '<|begin_of_text|>',
-        'user_bos': '<|start_header_id|>user<|end_header_id|>\n\n',
-        'eot': '<|eot_id|>\n',
-        'assistant_bos': '<|start_header_id|>assistant<|end_header_id|>\n\n',
-        'eos': '<|end_of_text|>'
+        'eos': '<|end_of_text|>',
+        'pad': '<|end_of_text|>',
+        'mask': "<|reserved_special_token_0|>",
     },
-    'mistral':{
+    'nvidia/NV-Embed-v2': {
         'bos': '<s>',
-        'user_bos': '[INST]',
-        'eot': '',
-        'assistant_bos': '[/INST]',
-        'eos': '</s>'
-    },
-    'phi3': {
-        'bos': '<s>',
-        'user_bos': '<|user|>',
-        'eot': '<|end|>',
-        'assistant_bos': '<|assistant|>',
-        'eos': '<|end_of_text|>'
-    },
-    'phi':{
-        'bos': '',
-        'user_bos': '<|im_start|>user\n\n',
-        'eot': '\n',
-        'assistant_bos': '<|im_start|>assistant\n\n',
-        'eos': '<|im_end|>'
-    },
-    'cohere': {
-        'bos': '<BOS_TOKEN>',
-        'user_bos': '<|START_OF_TURN_TOKEN|><|USER_TOKEN|>',
-        'eot': '<|END_OF_TURN_TOKEN|>',
-        'assistant_bos': '<|START_OF_TURN_TOKEN|><|CHATBOT_TOKEN|>',
-        'eos': '<|END_OF_TURN_TOKEN|>'
-    },
-    'gemma': {
         'eos': '</s>',
+        'pad': '</s>',
+        'mask': '<unk>',
     },
-    'gemma2': {
-        'eos': '</s>',
-    },
-
+    'phi': {
+        'bos': '<|endoftext|>',
+        'eos': '<|endoftext|>',
+        'pad': '<|endoftext|>',
+        'mask': '<|endoftext|>',
+    }
 }

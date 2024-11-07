@@ -1,11 +1,12 @@
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Union
 
 
 @dataclass
 class DataArguments:
-    training_metadata_path: str = field(
-        metadata={"help": "Path to the training metadata file that contains the metadata for the training data in the form of {'name': 'dataset_name', 'path': 'path_to_dataset', 'instruction': 'instruction_for_dataset', 'enable_cross_batch_negative_sampling': True/False}"},
+    data_names: List[str] = field(
+        default_factory=lambda: ['en'],
+        metadata={"help": "The datasets to use for training."}
     )
     max_seq_length: int = field(
         default=512,
@@ -28,21 +29,24 @@ class DataArguments:
         metadata={"help": "Number of workers to use for data loading"}
     )
 
+
 @dataclass
 class ModelArguments:
-    model_name_or_path: str = field(
-        metadata={"help": "The name or path of the model to use"}
+    encoder_name_or_path: str = field(
+        default='mistralai/Mistral-7B-Instruct-v0.3',
+        metadata={"help": "The name or path of the encoder model."}
     )
-    model_backbone_type: str = field(
-        metadata={"help": "The type of the model backbone"},
+    encoder_backbone_type: str = field(
+        default='mistral',
+        metadata={"help": "The type of the encoder backbone."}
     )
-    pooling_method: str = field(
-        default='mean',
-        metadata={"help": "Pooling method to use. Can be mean/weightedmean/cls/lasttoken"}
+    encoder_lora_name: str = field(
+        default=None,
+        metadata={"help": "The name of the encoder LoRA layer."}
     )
-    lora_name: str = field(
-        default='lora',
-        metadata={"help": "Lora name. If None then no lora is used."}
+    encoder_lora_target_modules: Union[str, List[str]] = field(
+        default="all",
+        metadata={"help": "Target modules for LoRA in the encoder."}
     )
     loar_r: int = field(
         default=16,
@@ -58,8 +62,9 @@ class ModelArguments:
     )
     attn_implementation: str = field(
         default='flash_attention_2',
-        metadata={"help": "The attention implementation which can be eager/sdpa/flash_attention_2"}
+        metadata={"help": "The attention implementation."}
     )
+
 
 @dataclass
 class TrainingArguments:
@@ -105,10 +110,33 @@ class TrainingArguments:
         default=False,
         metadata={"help": "Whether to use activation checkpointing or not"}
     )
-
-    con_loss_type: str = field(
+    use_gen: bool = field(
+        default=False,
+        metadata={"help": "Whether to use generation loss or not"}
+    )
+    gen_loss_type: str = field(
+        default='sft',
+        metadata={"help": "The Generation Loss function to use. Can be 'sft' for supervised fine-tuning, sigmoid/hinge/ipo/kto_pair for preference fine-tuning or None for no generation loss"}
+    )
+    beta: float = field(
+        default=0.1,
+        metadata={"help": "Beta for Generation loss"}
+    )
+    label_smoothing: float = field(
+        default=0.0,
+        metadata={"help": "Label smoothing for generation loss"}
+    )
+    use_kl: bool = field(
+        default=False,
+        metadata={"help": "Whether to use KL divergence loss or not"}
+    )
+    loss_type: str = field(
         default='NTXentLoss',
         metadata={"help": "The Contrastive Loss function to use. Can be 'NTXentLoss' or 'SupConLoss'"}
+    )
+    temperature: float = field(
+        default=0.05,
+        metadata={"help": "Temperature for Contrastive loss"}
     )
     use_miner: bool = field(
         default=True,
@@ -118,30 +146,6 @@ class TrainingArguments:
         default=True,
         metadata={"help": "Whether to use distance metric or not. If True, LpDistance will be used, otherwise CosineSimilarity."}
     )
-    gen_loss_type: str = field(
-        default=None,
-        metadata={"help": "The Generation Loss function to use. Can be 'sft' for supervised fine-tuning, sigmoid/hinge/ipo/kto_pair for preference fine-tuning or None for no generation loss"}
-    )
-    use_kl_loss: bool = field(
-        default=False,
-        metadata={"help": "Whether to use KL loss to align between reps scores and gen scores"}
-    )
-    preference_free: bool = field(
-        default=False,
-        metadata={"help": "Whether to use preference model in preference fine-tuning"}
-    )
-    label_smoothing: float = field(
-        default=0.,
-        metadata={"help": "The label smoothing value"}
-    )
-    beta: float = field(
-        default=0.1,
-        metadata={"help": "The beta value for the preference loss"}
-    )
-    temperature: float = field(
-        default=0.1,
-        metadata={"help": "The temperature for softmax"}
-    )
 
     global_batch_size: int = field(
         default=32,
@@ -149,7 +153,7 @@ class TrainingArguments:
     )
     gc_chunk_size: int = field(
         default=1,
-        metadata={"help": "GradCache chunk size. If None, not use GradCache. In the case of OOM, try to reduce this value."}
+        metadata={"help": "GradCache chunk size. If None, not use GradCache."}
     )
     eval_batch_size: int = field(
         default=32,
@@ -162,6 +166,10 @@ class TrainingArguments:
     max_steps: int = field(
         default=float("inf"),
         metadata={"help": "Maximum number of steps to train"}
+    )
+    is_cosine_annealing: bool = field(
+        default=True,
+        metadata={"help": "Whether to use cosine annealing or not"}
     )
     learning_rate: float = field(
         default=1e-4,
@@ -180,10 +188,10 @@ class TrainingArguments:
         metadata={"help": "Proportion of training steps to perform linear learning rate warmup for. E.g., 0.1 = 10% of training."}
     )
     grad_norm_clip: float = field(
-        default=None,
-        metadata={"help": "Gradient norm clipping value. In the case of nan gradients, try to use this."}
+        default=1.0,
+        metadata={"help": "Gradient norm clipping value"}
     )
-
+    
     checkpoint_dir: str = field(
         default=None,
         metadata={"help": "Directory to save checkpoints"}
@@ -191,6 +199,10 @@ class TrainingArguments:
     checkpoint_file: str = field(
         default=None,
         metadata={"help": "File to save checkpoints"}
+    )
+    only_load_model: bool = field(
+        default=False,
+        metadata={"help": "Whether to only load the model or not"}
     )
     checkpoint_interval: int = field(
         default=1000,
@@ -208,4 +220,3 @@ class TrainingArguments:
         default=1,
         metadata={"help": "Interval to log the training progress"}
     )
-

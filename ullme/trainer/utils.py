@@ -12,6 +12,30 @@ from lightning.fabric.loggers import CSVLogger, TensorBoardLogger
 from lightning.pytorch.loggers import WandbLogger
 
 
+def get_batch_logps(
+    logits: torch.FloatTensor,
+    labels: torch.LongTensor,
+    average_log_prob: bool = False,
+    label_pad_token_id: int = -100,
+    loss_weight_mask: Optional[torch.FloatTensor] = None,
+) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+    if logits.shape[:-1] != labels.shape:
+        raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
+    labels = labels[:, 1:].clone()
+    loss_weight_mask = loss_weight_mask[..., 1:].clone().contiguous() if loss_weight_mask is not None else None
+    loss_mask = labels != label_pad_token_id
+    loss_weight_mask = loss_weight_mask * loss_mask if loss_weight_mask is not None else loss_mask
+    logits = logits[:, :-1, :].clone() # (batch_size, seq_len, vocab_size)
+    # dummy token; we'll ignore the losses on these tokens later
+    labels[labels == label_pad_token_id] = 0
+    per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2) # (batch_size, seq_len)
+    average_logs = (per_token_logps * loss_weight_mask).sum(-1) / loss_weight_mask.sum(-1)
+    if average_log_prob:
+        return (per_token_logps * loss_weight_mask).sum(-1) / loss_weight_mask.sum(-1), average_logs # (batch_size,)
+    else:
+        return (per_token_logps * loss_weight_mask).sum(-1), average_logs # (batch_size,)
+    
+
 def split_input(model_input, chunk_size: int) -> List:
     """
     Split model input into chunks.
@@ -70,30 +94,6 @@ def get_wrapping_policy(transformer_layers: List[nn.Module]):
 
     policies=[lambda_policy] + all_transformer_wrap_policies
     return functools.partial(_or_policy, policies=policies)
-
-
-def get_batch_logps(
-    logits: torch.FloatTensor,
-    labels: torch.LongTensor,
-    average_log_prob: bool = False,
-    label_pad_token_id: int = -100,
-    loss_weight_mask: Optional[torch.FloatTensor] = None,
-) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
-    if logits.shape[:-1] != labels.shape:
-        raise ValueError("Logits (batch and sequence length dim) and labels must have the same shape.")
-    labels = labels[:, 1:].clone()
-    loss_weight_mask = loss_weight_mask[..., 1:].clone().contiguous() if loss_weight_mask is not None else None
-    loss_mask = labels != label_pad_token_id
-    loss_weight_mask = loss_weight_mask * loss_mask if loss_weight_mask is not None else loss_mask
-    logits = logits[:, :-1, :].clone() # (batch_size, seq_len, vocab_size)
-    # dummy token; we'll ignore the losses on these tokens later
-    labels[labels == label_pad_token_id] = 0
-    per_token_logps = torch.gather(logits.log_softmax(-1), dim=2, index=labels.unsqueeze(2)).squeeze(2) # (batch_size, seq_len)
-    average_logs = (per_token_logps * loss_weight_mask).sum(-1) / loss_weight_mask.sum(-1)
-    if average_log_prob:
-        return (per_token_logps * loss_weight_mask).sum(-1) / loss_weight_mask.sum(-1), average_logs # (batch_size,)
-    else:
-        return (per_token_logps * loss_weight_mask).sum(-1), average_logs # (batch_size,)
 
 
 def get_trainable_parameters(model: nn.Module) -> Tuple[int, int, float]:
@@ -174,20 +174,51 @@ def get_cosine_schedule_with_warmup(
     return LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
+def get_cosine_annealing_schedule_with_warmup(
+        optimizer: torch.optim.Optimizer,
+        num_warmup_steps: int,
+        num_training_steps: int,
+        num_cycles: float = 1,
+        min_reduce_rate: float = 0.0,
+        last_epoch: int = -1,
+    ) -> LambdaLR:
+
+    def lr_lambda(current_step):
+        num_training_steps_per_cycle = num_training_steps // num_cycles
+        if current_step >= num_training_steps:
+            return min_reduce_rate
+        # Get current step in the current epoch
+        current_step = current_step % num_training_steps_per_cycle
+        # Linearly increase learning rate from min_reduce_rate to 1.0 over num_warmup_steps
+        if current_step < num_warmup_steps:
+            return  min_reduce_rate + (1.0 - min_reduce_rate) * current_step / max(1, num_warmup_steps)
+        # Cosin schedule learning rate from 1.0 to min_reduce_rate
+        progress = (current_step - num_warmup_steps) / max(
+            1, num_training_steps_per_cycle - num_warmup_steps
+        )
+        cosine_lr_multiple = 0.5 * (
+            1.0 + min_reduce_rate + math.cos(math.pi * progress) * (1.0 - min_reduce_rate)
+        )
+        return max(min_reduce_rate, cosine_lr_multiple)
+    
+    return LambdaLR(optimizer, lr_lambda, last_epoch)
+
+
 def choose_logger(
     logger_name: Literal["csv", "tensorboard", "wandb"],
     out_dir: Path,
-    name: str,
+    project_name: str,
+    run_name: str,
     log_interval: int = 1,
     resume: Optional[bool] = None,
     **kwargs: Any,
 ):
     if logger_name == "csv":
-        return CSVLogger(root_dir=(out_dir / "logs"), name="csv", flush_logs_every_n_steps=log_interval, **kwargs)
+        return CSVLogger(root_dir=(out_dir / "logs"), name=run_name, flush_logs_every_n_steps=log_interval, **kwargs)
     if logger_name == "tensorboard":
-        return TensorBoardLogger(root_dir=(out_dir / "logs"), name="tensorboard", **kwargs)
+        return TensorBoardLogger(root_dir=(out_dir / "logs"), name=run_name, **kwargs)
     if logger_name == "wandb":
-        return WandbLogger(project=name, resume=resume, **kwargs)
+        return WandbLogger(project=project_name, name=run_name, resume=resume, **kwargs)
     raise ValueError(f"`--logger_name={logger_name}` is not a valid option. Choose from 'csv', 'tensorboard', 'wandb'.")
 
 
@@ -198,3 +229,6 @@ def trainable_filter(key: str, value: Any, trainable_layers: List[str]=[]) -> bo
     else:
         return False
 
+
+def clear_unused_gpu_mem():
+    torch.cuda.empty_cache()
